@@ -48,9 +48,9 @@ instance ToObject Pipe where
   toObject (Pipe x h) = [Object (Rectangle 40 (floor h)) (x, negate $ 500 - h) Brown, Object (Rectangle 40 (350 - floor h)) (x, 0) Brown]
 
 instance ToObject Game where
-  type FunctorType Game = Identity
-  toObject :: Game -> Identity Object
-  toObject (Game cube) = toObject cube
+  type FunctorType Game = []
+  toObject :: Game -> [Object]
+  toObject (Game cube pipe) = toObject pipe ++ (pure . runIdentity) (toObject cube) 
 
 class Functor f => ToScene f where
   toScene :: f Object -> Scene
@@ -64,7 +64,7 @@ instance ToScene Identity where
   toScene (Identity obj) = initScene (pure obj)
 
 initScene :: [Object] -> Scene
-initScene = Scene $ [Object (Rectangle 200 500) (0, 0) BabyBlue, Object (Rectangle 200 100) (0, -500) Brown] ++ toObject (Pipe 150 100)
+initScene = Scene $ [Object (Rectangle 200 500) (0, 0) BabyBlue, Object (Rectangle 200 100) (0, -500) Brown]
 
 
 ---------------------
@@ -147,18 +147,27 @@ nextAppInput inp _ = inp
 
 data Pipe = Pipe { _x :: Double, _h :: Double }
 data Cube = Cube { _y :: Double, _v :: Double }
-newtype Game = Game { gameCube :: Cube }
+data Game = Game { gameCube :: Cube, gamePipe :: Pipe }
 
 initGame :: Game
-initGame = Game initCube
+initGame = Game initCube initPipe
 
 initCube :: Cube
 initCube = Cube (-50) (-10)
 
+initPipe :: Pipe
+initPipe = Pipe 150 100
+
 game :: SF AppInput Game
 game = proc input -> do
   cube <- flappingCube initCube -< input
-  returnA -< Game cube
+  pipe <- movingPipe initPipe -< input
+  returnA -< Game cube pipe
+
+movingPipe :: Pipe -> SF a Pipe
+movingPipe (Pipe x0 h) = proc input -> do
+  x <- imIntegral x0 -< - 20
+  returnA -< Pipe x h
 
 fallingCube :: Cube -> SF a Cube
 fallingCube (Cube y0 v0) = proc _ -> do
@@ -175,7 +184,7 @@ flappingCube cube = switch sf cont
       flap <- flapTrigger -< input
       returnA -< (cube, flap `tag` cube)
     cont :: Cube -> SF AppInput Cube
-    cont (Cube y v) = flappingCube (Cube y (v + 100))
+    cont (Cube y v) = flappingCube (Cube y 50)
 
 bouncingCube :: Cube -> SF a Cube
 bouncingCube cube = switch (sf cube) cont
@@ -220,9 +229,9 @@ mainLoop = do
           Just event -> return (0.1, Just . Event $ SDL.eventPayload event)
           Nothing -> return (0.1, Nothing)
       handleOutput :: Renderer -> p -> Game -> IO Bool
-      handleOutput r _ (Game c@(Cube y v)) = do
+      handleOutput r _ g@(Game c@(Cube y v) p) = do
         putStrLn ("pos: " ++ show v ++ " vel: " ++ show v)
-        liftIO $ draw r (toScene $ toObject c)
+        liftIO $ draw r (toScene $ toObject g )
         return False
       pipeline :: SF (Event SDL.EventPayload) Game
       pipeline = parseSDLInput >>> game
