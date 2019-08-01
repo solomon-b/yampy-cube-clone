@@ -45,7 +45,7 @@ instance ToObject Cube where
 instance ToObject Pipe where
   type FunctorType Pipe = []
   toObject :: Pipe -> [] Object
-  toObject (Pipe x h) = [Object (Rectangle 40 (floor h)) (x, negate $ 500 - h) Brown, Object (Rectangle 40 (500 - floor h)) (x, 0) Brown]
+  toObject (Pipe x h) = [Object (Rectangle 40 (floor h)) (x, negate $ 500 - h) Brown, Object (Rectangle 40 (350 - floor h)) (x, 0) Brown]
 
 instance ToObject Game where
   type FunctorType Game = Identity
@@ -112,6 +112,35 @@ draw renderer (Scene bg fg) = do
   SDL.present renderer
 
 
+----------------
+-- USER INPUT --
+----------------
+
+keypress :: SF AppInput (Event SDL.Scancode)
+keypress = inpKeyPressed ^>> edgeJust
+
+keyPressed :: SDL.Scancode -> SF AppInput (Event ())
+keyPressed code = keypress >>^ filterE (code ==) >>^ tagWith ()
+
+data AppInput = AppInput
+  { inpKeyPressed :: Maybe SDL.Scancode
+  , inpQuit       :: Bool
+  }
+
+initAppInput :: AppInput
+initAppInput = AppInput Nothing False
+
+parseSDLInput :: SF (Event SDL.EventPayload) AppInput
+parseSDLInput = accumHoldBy nextAppInput initAppInput
+
+nextAppInput :: AppInput -> SDL.EventPayload -> AppInput
+nextAppInput inp (SDL.KeyboardEvent event) =
+  case SDL.keyboardEventKeyMotion event of
+    SDL.Pressed  -> inp { inpKeyPressed = Just $ SDL.keysymScancode $ SDL.keyboardEventKeysym event }
+    SDL.Released -> inp { inpKeyPressed = Nothing}
+nextAppInput inp _ = inp
+
+  
 -----------------
 -- GAME LOGIC ---
 -----------------
@@ -126,9 +155,9 @@ initGame = Game initCube
 initCube :: Cube
 initCube = Cube (-50) (-10)
 
-game :: SF () Game
+game :: SF AppInput Game
 game = proc input -> do
-  cube <- bouncingCube initCube -< input
+  cube <- flappingCube initCube -< input
   returnA -< Game cube
 
 fallingCube :: Cube -> SF a Cube
@@ -136,6 +165,17 @@ fallingCube (Cube y0 v0) = proc _ -> do
   v <- (v0 +) ^<< integral -< -9.81
   y <- (y0 +) ^<< integral -< v
   returnA -< Cube y v
+
+flappingCube :: Cube -> SF AppInput Cube
+flappingCube cube = switch sf cont
+  where
+    sf :: SF AppInput (Cube, Event Cube)
+    sf = proc input -> do
+      cube <- fallingCube cube -< ()
+      flap <- flapTrigger -< input
+      returnA -< (cube, flap `tag` cube)
+    cont :: Cube -> SF AppInput Cube
+    cont (Cube y v) = flappingCube (Cube y (v + 100))
 
 bouncingCube :: Cube -> SF a Cube
 bouncingCube cube = switch (sf cube) cont
@@ -148,19 +188,39 @@ bouncingCube cube = switch (sf cube) cont
     cont :: Cube -> SF a Cube
     cont (Cube y v) = bouncingCube (Cube y (-v * 0.7))
 
+flapTrigger :: SF AppInput (Event ())
+flapTrigger = proc input -> do
+  spaceBarTap <- keyPressed SDL.ScancodeSpace -< input
+  returnA -< spaceBarTap
+
+pollKeyboard :: IO (Maybe AppInput)
+pollKeyboard = do
+  event <- (fmap . fmap) SDL.eventPayload SDL.pollEvent
+  case event of
+    Just (SDL.KeyboardEvent keyevent) -> do
+      let scancode = SDL.keysymScancode . SDL.keyboardEventKeysym $ keyevent
+      return $ constructAppInput scancode
+    _ -> return Nothing
+
+constructAppInput :: SDL.Scancode -> Maybe AppInput
+constructAppInput SDL.ScancodeQ = Just $ initAppInput { inpQuit = True }
+constructAppInput SDL.ScancodeSpace = Just $ initAppInput { inpKeyPressed = Just SDL.ScancodeSpace }
+constructAppInput _ = Nothing
 
 mainLoop :: IO ()
 mainLoop = do
   renderer <- initSDL
-  reactimate (return ()) produceInput (handleOutput renderer) pipeline
+  reactimate (return initAppInput) produceInput (handleOutput renderer) pipeline
     where
-      produceInput :: Bool -> IO (DTime, Maybe ())
+      produceInput :: Bool -> IO (DTime, Maybe AppInput)
       produceInput _ = do
         threadDelay 30000
-        return (0.1, Nothing)
+        appInput <- pollKeyboard
+        return (0.1, appInput)
       handleOutput :: Renderer -> p -> Game -> IO Bool
       handleOutput r _ (Game c@(Cube y v)) = do
         putStrLn ("pos: " ++ show v ++ " vel: " ++ show v)
         liftIO $ draw r (toScene $ toObject c)
         return False
+      pipeline :: SF AppInput Game
       pipeline = game
