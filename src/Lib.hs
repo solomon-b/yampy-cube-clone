@@ -156,7 +156,7 @@ initCube :: Cube
 initCube = Cube (-50) (-10)
 
 initPipe :: Pipe
-initPipe = Pipe 150 100
+initPipe = Pipe 250 100
 
 game :: SF AppInput Game
 game = proc input -> do
@@ -165,9 +165,12 @@ game = proc input -> do
   returnA -< Game cube pipe
 
 movingPipe :: Pipe -> SF a Pipe
-movingPipe (Pipe x0 h) = proc input -> do
-  x <- imIntegral x0 -< - 20
-  returnA -< Pipe x h
+movingPipe (Pipe x0 h) = switch sf (\_ -> movingPipe (Pipe x0 h))
+  where
+    sf = proc input -> do
+      x <- imIntegral x0 -< - 20
+      respawn <- edge -< x < (-100)
+      returnA -< (Pipe x h, respawn)
 
 fallingCube :: Cube -> SF a Cube
 fallingCube (Cube y0 v0) = proc _ -> do
