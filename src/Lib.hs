@@ -210,17 +210,19 @@ constructAppInput _ = Nothing
 mainLoop :: IO ()
 mainLoop = do
   renderer <- initSDL
-  reactimate (return initAppInput) produceInput (handleOutput renderer) pipeline
+  reactimate (return NoEvent) produceInput (handleOutput renderer) pipeline
     where
-      produceInput :: Bool -> IO (DTime, Maybe AppInput)
+      produceInput :: Bool -> IO (DTime, Maybe (Event SDL.EventPayload))
       produceInput _ = do
         threadDelay 30000
-        appInput <- pollKeyboard
-        return (0.1, appInput)
+        mevent <- SDL.pollEvent
+        case mevent of
+          Just event -> return (0.1, Just . Event $ SDL.eventPayload event)
+          Nothing -> return (0.1, Nothing)
       handleOutput :: Renderer -> p -> Game -> IO Bool
       handleOutput r _ (Game c@(Cube y v)) = do
         putStrLn ("pos: " ++ show v ++ " vel: " ++ show v)
         liftIO $ draw r (toScene $ toObject c)
         return False
-      pipeline :: SF AppInput Game
-      pipeline = game
+      pipeline :: SF (Event SDL.EventPayload) Game
+      pipeline = parseSDLInput >>> game
