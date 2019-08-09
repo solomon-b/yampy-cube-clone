@@ -21,84 +21,110 @@ import SDL (Renderer, Point(..), V4(..), V2(..), WindowConfig(..), ($=))
 import System.Random
 import Debug.Trace
 
+
+------------
+--- TODO ---
+------------
+
+-- Fix coordinate abstraction
+-- Fix Collision Detection
+-- Fix Pipe respawn (currently is not a smooth transition)
+-- Add a quit button
+-- Add a timer in the corner
+-- Pipe gap vary within a range
+-- Pipe speed increase and pipe gap narrow over time
+
+  
 ----------------
 --- GRAPHICS ---
 ----------------
+-- All Objects are center positioned with (0,0) in the lower left corner and Y increasing upward
 
 data Color = Red | Yellow | Green | Blue | BabyBlue | White | Brown deriving Show
 data Shape a = Rectangle { _rectW :: a, _rectH :: a} deriving Show
-data Object = Object
-  { _shape :: Shape Int
-  , _pos   :: (Double, Double)
+data Object a = Object
+  { _shape :: Shape a
+  , _pos   :: (a, a)
   , _color :: Color
   } deriving Show
 
 data Scene = Scene
-  { _background :: [Object]
-  , _foreground :: [Object]
+  { _background :: [Object Double]
+  , _foreground :: [Object Double]
   }
 
 class ToObject a where
   type FunctorType a :: * -> *
-  toObject :: a -> FunctorType a Object
+  toObject :: a -> FunctorType a (Object Double)
 
 instance ToObject Cube where
   type FunctorType Cube = Identity
-  toObject :: Cube -> Identity Object
+  toObject :: Cube -> Identity (Object Double)
   toObject (Cube y _) = Identity $ Object (Rectangle cubeSize cubeSize) (cubeX, y) Yellow
 
 instance ToObject Pipe where
   type FunctorType Pipe = []
-  toObject :: Pipe -> [] Object
+  toObject :: Pipe -> [] (Object Double)
   toObject (Pipe x h) =
-    [ Object (Rectangle pipeWidth (floor h)) (x, negate 500 + (0.5 * h)) Green
-    , Object (Rectangle pipeWidth (500 - floor h - pipeGap)) (x, negate (0.5 * (500 - h - fromIntegral pipeGap))) Green
+    [ Object (Rectangle pipeWidth h) (x, 100 + half h) Green
+    , Object (Rectangle pipeWidth (windowH - groundHeight - h - pipeGap)) (x, 100 + half h + pipeGap) Green
     ]
+
+-- h = 100: (h / 2) + 100
 
 instance ToObject Game where
   type FunctorType Game = []
-  toObject :: Game -> [Object]
+  toObject :: Game -> [Object Double]
   toObject (Game cube pipe) = toObject pipe ++ (pure . runIdentity) (toObject cube) 
 
 class Functor f => ToScene f where
-  toScene :: f Object -> Scene
+  toScene :: f (Object Double) -> Scene
 
 instance ToScene [] where
-  toScene :: [Object] -> Scene
+  toScene :: [Object Double] -> Scene
   toScene = initScene
 
 instance ToScene Identity where
-  toScene :: Identity Object -> Scene
+  toScene :: Identity (Object Double) -> Scene
   toScene (Identity obj) = initScene (pure obj)
 
-initScene :: [Object] -> Scene
-initScene = Scene [Object (Rectangle 200 500) (100, -250) BabyBlue, Object (Rectangle 200 100) (100, -550) Brown]
+initScene :: [Object Double] -> Scene
+initScene = Scene [Object (Rectangle 200 500) (100, 350) BabyBlue, Object (Rectangle 200 100) (100, 50) Brown]
 
 
 ---------------------
 --- SDL RENDERING ---
 ---------------------
+-- SDL's coordinate system (0,0) in the top left corner with Y increasing downward
+-- SDL.drawRect uses upper Left corner
 
 window :: WindowConfig
-window = SDL.defaultWindow { windowInitialSize = V2 windowW windowH}
+window = SDL.defaultWindow { windowInitialSize = V2 windowW windowH }
 
-drawObject :: Renderer -> Object -> IO ()
+drawObject :: Renderer -> Object Double -> IO ()
 drawObject renderer object = do
   setDrawColor renderer (_color object)
   SDL.fillRect renderer (Just $ objToSDLRect object)
-  
-objToSDLRect :: Num a => Object -> SDL.Rectangle a
-objToSDLRect obj =
-  let (xC, yC) = negate <$> _pos obj
-      (w, h) = (fromIntegral . _rectW &&& fromIntegral . _rectH) . _shape $ obj
-      (xL, yL) = both (fromIntegral . floor) (xC - (w / 2), yC - (h / 2))
-  in SDL.Rectangle (P (fromIntegral . floor <$> V2 xL yL)) (fromIntegral . floor <$> V2 w h)
 
-centeredToLowerLeft :: Object -> Object
-centeredToLowerLeft (Object (Rectangle w h) (xC, yC) color) =
-  let xL = xC - fromIntegral (w `div` 2)
-      yL = yC - fromIntegral (h `div` 2)
-  in Object (Rectangle w h) (xL, yL) color
+type W = Double
+type H = Double
+type Xl = Double
+type Yu = Double
+
+centeredtoUpperLeft :: Object Double -> (Xl, Yu, W, H)
+centeredtoUpperLeft obj =
+  let (xC, yC) = _pos obj
+      (w, h) = (_rectW &&& _rectH) . _shape $ obj
+      (xL, yU) = both (fromIntegral . floor) (xC - (w / 2), yC + half h)
+  in (xL, yU, w, h)
+  
+objToSDLRect :: Num a => Object Double -> SDL.Rectangle a
+objToSDLRect obj =
+  let (xC, yC) = _pos obj
+      (w, h) = (_rectW &&& _rectH) . _shape $ obj
+      (xL, yU) = (xC - (w / 2), yC + half h)
+      (xLI, yUI) = (xL, windowH - yU)
+  in SDL.Rectangle (P (fromIntegral . floor <$> V2 xLI yUI)) (fromIntegral . floor <$> V2 w h)
 
 clearFrame :: Renderer -> IO ()
 clearFrame renderer = do
@@ -109,7 +135,7 @@ initSDL :: IO Renderer
 initSDL = do
   SDL.initializeAll
   window <- SDL.createWindow "My SDL Application" window
-  SDL.createRenderer window (-1) SDL.defaultRenderer
+  SDL.createRenderer window 0 SDL.defaultRenderer
 
 setDrawColor :: Renderer -> Color -> IO ()
 setDrawColor renderer color =
@@ -167,7 +193,7 @@ nextAppInput inp _ = inp
 -------------------------
 
 data Pipe = Pipe { _x :: Double, _h :: Double } deriving Show
-data Cube = Cube { _y :: Double, _v :: Double }
+data Cube = Cube { _y :: Double, _v :: Double } deriving Show
 data Game = Game { gameCube :: Cube, gamePipe :: Pipe }
 
 windowW :: Num a => a
@@ -176,26 +202,32 @@ windowW = 200
 windowH :: Num a => a
 windowH = 600
 
-cubeSize :: Int
+skyHeight :: Double
+skyHeight = 500
+
+groundHeight :: Double
+groundHeight = windowH - skyHeight
+
+cubeSize :: Double
 cubeSize = 25
 
 cubeX :: Double
 cubeX = 50
 
-pipeWidth :: Int
+pipeWidth :: Double
 pipeWidth = 40
 
 pipeHeight :: Double
 pipeHeight = 100
 
-pipeGap :: Int
+pipeGap :: Double
 pipeGap = 200
 
 initGame :: Game
 initGame = Game initCube initPipe
 
 initCube :: Cube
-initCube = Cube (-50) (-10)
+initCube = Cube 350 (-10)
 
 initPipe :: Pipe
 initPipe = Pipe 200 100
@@ -205,13 +237,29 @@ initPipe = Pipe 200 100
 -- GAME LOGIC ---
 -----------------
 
+half :: Fractional a => a -> a
+half n = n / 2
+
+-- c1 left side to the left of c2's right side AND
+-- c1 right side to the right of c2's left side AND
+-- C1 bottom side beneath c2's top side AND
+-- c1 top side above c2's top side
 checkCollision :: Game -> Bool
 checkCollision (Game cube pipe) = 
-  let cubeSize' = fromIntegral cubeSize
-      xIntersects = _x pipe <= cubeSize' + 50 && _x pipe > 0
-      yIntersects = _y cube <= negate (500 - _h pipe - cubeSize') || _y cube >= negate 500 + _h pipe + fromIntegral pipeGap
-      groundIntersect = _y cube <= negate 500 + cubeSize'
-  in groundIntersect || (xIntersects && yIntersects)
+  let cLeft    = cubeX - half cubeSize
+      cRight   = cubeX + half cubeSize
+      cTop     = _y cube + half cubeSize
+      cBottom  = _y cube - half cubeSize
+      p1Left   = _x pipe - half pipeWidth
+      p1Right  = _x pipe + half pipeWidth
+      p1Top    = -500 + _h pipe
+      p1Bottom = -500
+      collision = cLeft < p1Right && cRight > p1Left && cBottom < p1Top && cTop > p1Top
+        
+      --xIntersects = _x pipe <= cubeSize' + 50 && _x pipe > 0
+      --yIntersects = _y cube <= negate (500 - _h pipe - cubeSize') || _y cube >= negate 500 + _h pipe + fromIntegral pipeGap
+      groundIntersect = _y cube <= negate 500 + cubeSize
+  in groundIntersect || collision -- (xIntersects && yIntersects)
 
 game :: SF AppInput Game
 game = switch sf (const game)
@@ -228,14 +276,14 @@ gameSession = proc input -> do
   returnA -< Game cube pipe
 
 pipeHeightGen :: SF a Double
-pipeHeightGen = noiseR (20, 500 - fromIntegral pipeGap - 20) (mkStdGen 3)
+pipeHeightGen = noiseR (20, skyHeight - pipeGap - 20) (mkStdGen 3)
 
 movingPipe :: Pipe -> SF Double Pipe
 movingPipe (Pipe x0 h0) = switch sf cont
   where
     sf = proc h -> do
       x <- imIntegral x0 -< - 20
-      respawn <- edge -< x < negate 100
+      respawn <- edge -< x < groundHeight
       returnA -< (Pipe x h0, respawn `tag` h)
     cont h = movingPipe $ Pipe x0 h
 
