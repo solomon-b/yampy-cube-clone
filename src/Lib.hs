@@ -1,3 +1,5 @@
+{-# LANGUAGE DeriveFunctor #-}
+{-# LANGUAGE DataKinds #-}
 {-# LANGUAGE OverloadedStrings #-}
 {-# LANGUAGE InstanceSigs #-}
 {-# LANGUAGE TypeFamilies #-}
@@ -12,11 +14,15 @@ import Data.IORef
 import Data.Bifunctor
 import Data.Foldable
 import Data.Functor.Identity
+import Data.Function
+import Data.Proxy
 import Data.Tuple.Extra hiding ((&&&))
 
 import FRP.Yampa
 import qualified SDL 
 import SDL (Renderer, Point(..), V4(..), V2(..), WindowConfig(..), ($=))
+
+import Foreign.C.Types
 
 import System.Random
 import Debug.Trace
@@ -26,9 +32,7 @@ import Debug.Trace
 --- TODO ---
 ------------
 
--- Fix coordinate abstraction
 -- Fix Collision Detection
--- Fix Pipe respawn (currently is not a smooth transition)
 -- Add a quit button
 -- Add a timer in the corner
 -- Pipe gap vary within a range
@@ -40,58 +44,72 @@ import Debug.Trace
 ----------------
 -- All Objects are center positioned with (0,0) in the lower left corner and Y increasing upward
 
+data Anchor = Center | UpperLeft
 data Color = Red | Yellow | Green | Blue | BabyBlue | White | Brown deriving Show
-data Shape a = Rectangle { _rectW :: a, _rectH :: a} deriving Show
-data Object a = Object
+data Shape a = Rectangle { _rectW :: a, _rectH :: a}
+           --  | Circle    { _rad :: a }
+             deriving (Show, Functor)
+
+data Object (anchor :: Anchor) a = Object
   { _shape :: Shape a
   , _pos   :: (a, a)
   , _color :: Color
-  } deriving Show
+  } deriving (Show, Functor)
 
 data Scene = Scene
-  { _background :: [Object Double]
-  , _foreground :: [Object Double]
+  { _background :: [Object 'Center Double]
+  , _foreground :: [Object 'Center Double]
   }
 
 class ToObject a where
   type FunctorType a :: * -> *
-  toObject :: a -> FunctorType a (Object Double)
+  toObject :: a -> FunctorType a (Object 'Center Double)
 
 instance ToObject Cube where
   type FunctorType Cube = Identity
-  toObject :: Cube -> Identity (Object Double)
+  toObject :: Cube -> Identity (Object 'Center Double)
   toObject (Cube y _) = Identity $ Object (Rectangle cubeSize cubeSize) (cubeX, y) Yellow
 
 instance ToObject Pipe where
   type FunctorType Pipe = []
-  toObject :: Pipe -> [] (Object Double)
+  toObject :: Pipe -> [] (Object 'Center Double)
   toObject (Pipe x h) =
     [ Object (Rectangle pipeWidth h) (x, 100 + half h) Green
-    , Object (Rectangle pipeWidth (windowH - groundHeight - h - pipeGap)) (x, 100 + half h + pipeGap) Green
+    --, Object (Rectangle pipeWidth (windowH - groundHeight - h - pipeGap)) (x, groundHeight + (windowH - groundHeight - h - pipeGap) + pipeGap) Green
     ]
-
--- h = 100: (h / 2) + 100
 
 instance ToObject Game where
   type FunctorType Game = []
-  toObject :: Game -> [Object Double]
+  toObject :: Game -> [Object 'Center Double]
   toObject (Game cube pipe) = toObject pipe ++ (pure . runIdentity) (toObject cube) 
 
 class Functor f => ToScene f where
-  toScene :: f (Object Double) -> Scene
+  toScene :: f (Object 'Center Double) -> Scene
 
 instance ToScene [] where
-  toScene :: [Object Double] -> Scene
+  toScene :: [Object 'Center Double] -> Scene
   toScene = initScene
 
 instance ToScene Identity where
-  toScene :: Identity (Object Double) -> Scene
+  toScene :: Identity (Object 'Center Double) -> Scene
   toScene (Identity obj) = initScene (pure obj)
 
-initScene :: [Object Double] -> Scene
+initScene :: [Object 'Center Double] -> Scene
 initScene = Scene [Object (Rectangle 200 500) (100, 350) BabyBlue, Object (Rectangle 200 100) (100, 50) Brown]
 
+-- Axis Aligned Rectangle Collision
+detectCollision :: Object 'UpperLeft Double -> Object 'UpperLeft Double -> Bool
+detectCollision obj1 obj2 =
+  let (x1, y1) = _pos obj1
+      (x2, y2) = _pos obj2
+      (w1, h1) = (_rectW &&& _rectH) (_shape obj1)
+      (w2, h2) = (_rectW &&& _rectH) (_shape obj2)
+  in x1 < x2 + w2 && x1 + w1 > x2 && y1 < y2 + h2 && y1 + h1 > y2
 
+detectCollision' :: Object 'Center Double -> Object 'Center Double -> Bool
+detectCollision' = detectCollision `on` shiftAnchor 
+
+  
 ---------------------
 --- SDL RENDERING ---
 ---------------------
@@ -101,54 +119,47 @@ initScene = Scene [Object (Rectangle 200 500) (100, 350) BabyBlue, Object (Recta
 window :: WindowConfig
 window = SDL.defaultWindow { windowInitialSize = V2 windowW windowH }
 
-drawObject :: Renderer -> Object Double -> IO ()
-drawObject renderer object = do
-  setDrawColor renderer (_color object)
-  SDL.fillRect renderer (Just $ objToSDLRect object)
-
-type W = Double
-type H = Double
-type Xl = Double
-type Yu = Double
-
-centeredtoUpperLeft :: Object Double -> (Xl, Yu, W, H)
-centeredtoUpperLeft obj =
+shiftAnchor :: Object 'Center Double -> Object 'UpperLeft Double 
+shiftAnchor obj =
   let (xC, yC) = _pos obj
       (w, h) = (_rectW &&& _rectH) . _shape $ obj
-      (xL, yU) = both (fromIntegral . floor) (xC - (w / 2), yC + half h)
-  in (xL, yU, w, h)
-  
-objToSDLRect :: Num a => Object Double -> SDL.Rectangle a
-objToSDLRect obj =
-  let (xC, yC) = _pos obj
-      (w, h) = (_rectW &&& _rectH) . _shape $ obj
-      (xL, yU) = (xC - (w / 2), yC + half h)
-      (xLI, yUI) = (xL, windowH - yU)
-  in SDL.Rectangle (P (fromIntegral . floor <$> V2 xLI yUI)) (fromIntegral . floor <$> V2 w h)
+      (xL, yU) = (xC - half w, yC + half h)
+  in obj { _pos = (xL, yU)}
+
+mkObjNum :: (RealFrac a, Num b) => Object anchor a -> Object anchor b
+mkObjNum = fmap (fromIntegral . floor)
+
+mkSdlRect :: Num a => Object 'UpperLeft a -> (SDL.Rectangle a, Color)
+mkSdlRect obj = 
+  let (w, h) = (_rectW &&& _rectH) . _shape $ obj
+      (x, y) = (-) windowH <$> _pos obj
+      color  = _color obj
+  in (SDL.Rectangle (P (V2 x y)) (V2 w h), color)
+
+renderObject :: Renderer -> (SDL.Rectangle CInt, Color) -> IO ()
+renderObject r (rect, color) = do
+  setDrawColor r color
+  SDL.fillRect r (Just rect)
+
+drawObject :: Renderer -> Object 'Center Double -> IO ()
+drawObject renderer = shiftAnchor >>> mkObjNum >>> mkSdlRect >>> renderObject renderer
 
 clearFrame :: Renderer -> IO ()
 clearFrame renderer = do
   setDrawColor renderer White
   SDL.clear renderer
 
-initSDL :: IO Renderer
-initSDL = do
-  SDL.initializeAll
-  window <- SDL.createWindow "My SDL Application" window
-  SDL.createRenderer window 0 SDL.defaultRenderer
-
 setDrawColor :: Renderer -> Color -> IO ()
 setDrawColor renderer color =
   case color of
-    Red   -> SDL.rendererDrawColor renderer $= V4 255 0 0 0
-    Blue  -> SDL.rendererDrawColor renderer $= V4 0 0 255 0
-    BabyBlue  -> SDL.rendererDrawColor renderer $= V4 0 235 255 0
-    Green -> SDL.rendererDrawColor renderer $= V4 120 200 15 0
-    White -> SDL.rendererDrawColor renderer $= V4 255 255 255 255
-    Brown -> SDL.rendererDrawColor renderer $= V4 150 90 25 0
-    Yellow -> SDL.rendererDrawColor renderer $= V4 255 200 50 0
+    Red      -> SDL.rendererDrawColor renderer $= V4 255 0 0 0
+    Blue     -> SDL.rendererDrawColor renderer $= V4 0 0 255 0
+    BabyBlue -> SDL.rendererDrawColor renderer $= V4 0 235 255 0
+    Green    -> SDL.rendererDrawColor renderer $= V4 120 200 15 0
+    White    -> SDL.rendererDrawColor renderer $= V4 255 255 255 255
+    Brown    -> SDL.rendererDrawColor renderer $= V4 150 90 25 0
+    Yellow   -> SDL.rendererDrawColor renderer $= V4 255 200 50 0
     
-
 drawBackground :: Renderer -> Color -> IO ()
 drawBackground renderer color = setDrawColor renderer color >> SDL.clear renderer
 
@@ -157,6 +168,12 @@ draw renderer (Scene bg fg) = do
   clearFrame renderer
   traverse_ (drawObject renderer) (bg ++ fg)
   SDL.present renderer
+
+initSDL :: IO Renderer
+initSDL = do
+  SDL.initializeAll
+  window <- SDL.createWindow "Yampy Cube Clone" window
+  SDL.createRenderer window 0 SDL.defaultRenderer
 
 
 ----------------
@@ -252,13 +269,10 @@ checkCollision (Game cube pipe) =
       cBottom  = _y cube - half cubeSize
       p1Left   = _x pipe - half pipeWidth
       p1Right  = _x pipe + half pipeWidth
-      p1Top    = -500 + _h pipe
-      p1Bottom = -500
-      collision = cLeft < p1Right && cRight > p1Left && cBottom < p1Top && cTop > p1Top
-        
-      --xIntersects = _x pipe <= cubeSize' + 50 && _x pipe > 0
-      --yIntersects = _y cube <= negate (500 - _h pipe - cubeSize') || _y cube >= negate 500 + _h pipe + fromIntegral pipeGap
-      groundIntersect = _y cube <= negate 500 + cubeSize
+      p1Top    = groundHeight + _h pipe
+      p1Bottom = groundHeight
+      collision = (cLeft < p1Right) && (cRight > p1Left) && (cBottom < p1Top) && (cTop > p1Bottom)
+      groundIntersect = _y cube <= groundHeight + half cubeSize
   in groundIntersect || collision -- (xIntersects && yIntersects)
 
 game :: SF AppInput Game
@@ -283,8 +297,8 @@ movingPipe (Pipe x0 h0) = switch sf cont
   where
     sf = proc h -> do
       x <- imIntegral x0 -< - 20
-      respawn <- edge -< x < groundHeight
-      returnA -< (Pipe x h0, respawn `tag` h)
+      respawn <- edge -< x <= negate cubeSize
+      returnA -< (Pipe (x + half pipeWidth) h0, respawn `tag` h)
     cont h = movingPipe $ Pipe x0 h
 
 fallingCube :: Cube -> SF a Cube
@@ -350,7 +364,7 @@ mainLoop = do
       handleOutput r _ g@(Game c@(Cube y v) p) = do
         --putStrLn ("pos: " ++ show v ++ " vel: " ++ show v)
         --print $ toObject p
-        liftIO $ draw r (toScene $ toObject g )
+        liftIO $ draw r (toScene $ toObject g)
         return False
       pipeline :: SF (Event SDL.EventPayload) Game
       pipeline = parseSDLInput >>> game
