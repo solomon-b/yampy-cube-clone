@@ -32,7 +32,6 @@ import Debug.Trace
 --- TODO ---
 ------------
 
--- Fix Collision Detection
 -- Add a quit button
 -- Add a timer in the corner
 -- Pipe gap vary within a range
@@ -75,7 +74,7 @@ instance ToObject Pipe where
   toObject :: Pipe -> [] (Object 'Center Double)
   toObject (Pipe x h) =
     [ Object (Rectangle pipeWidth h) (x, 100 + half h) Green
-    --, Object (Rectangle pipeWidth (windowH - groundHeight - h - pipeGap)) (x, groundHeight + (windowH - groundHeight - h - pipeGap) + pipeGap) Green
+    , Object (Rectangle pipeWidth (windowH - groundHeight - h - pipeGap)) (x, groundHeight + (windowH - groundHeight - h - pipeGap) + pipeGap) Green
     ]
 
 instance ToObject Game where
@@ -104,12 +103,11 @@ detectCollision obj1 obj2 =
       (x2, y2) = _pos obj2
       (w1, h1) = (_rectW &&& _rectH) (_shape obj1)
       (w2, h2) = (_rectW &&& _rectH) (_shape obj2)
-  in x1 < x2 + w2 && x1 + w1 > x2 && y1 < y2 + h2 && y1 + h1 > y2
+  in x1 < x2 + w2 && x1 + w1 > x2 && y1 > y2 - h2 && y1 - h1 < y2
 
 detectCollision' :: Object 'Center Double -> Object 'Center Double -> Bool
 detectCollision' = detectCollision `on` shiftAnchor 
 
-  
 ---------------------
 --- SDL RENDERING ---
 ---------------------
@@ -261,20 +259,23 @@ half n = n / 2
 -- c1 right side to the right of c2's left side AND
 -- C1 bottom side beneath c2's top side AND
 -- c1 top side above c2's top side
-checkCollision :: Game -> Bool
-checkCollision (Game cube pipe) = 
-  let cLeft    = cubeX - half cubeSize
-      cRight   = cubeX + half cubeSize
-      cTop     = _y cube + half cubeSize
-      cBottom  = _y cube - half cubeSize
-      p1Left   = _x pipe - half pipeWidth
-      p1Right  = _x pipe + half pipeWidth
-      p1Top    = groundHeight + _h pipe
-      p1Bottom = groundHeight
-      collision = (cLeft < p1Right) && (cRight > p1Left) && (cBottom < p1Top) && (cTop > p1Bottom)
-      groundIntersect = _y cube <= groundHeight + half cubeSize
-  in groundIntersect || collision -- (xIntersects && yIntersects)
+--checkCollision :: Game -> Bool
+--checkCollision (Game cube pipe) = 
+--  let cLeft    = cubeX - half cubeSize
+--      cRight   = cubeX + half cubeSize
+--      cTop     = _y cube + half cubeSize
+--      cBottom  = _y cube - half cubeSize
+--      p1Left   = _x pipe - half pipeWidth
+--      p1Right  = _x pipe + half pipeWidth
+--      p1Top    = groundHeight + _h pipe
+--      p1Bottom = groundHeight
+--      collision = (cLeft < p1Right) && (cRight > p1Left) && (cBottom < p1Top) && (cTop > p1Bottom)
+--      groundIntersect = _y cube <= groundHeight + half cubeSize
+--  in groundIntersect || collision -- (xIntersects && yIntersects)
 
+checkCollision :: Game -> Bool
+checkCollision (Game cube pipe) = or $ detectCollision' (runIdentity . toObject $ cube) <$> toObject pipe
+  
 game :: SF AppInput Game
 game = switch sf (const game)
   where
