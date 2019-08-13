@@ -20,7 +20,7 @@ import Data.Tuple.Extra hiding ((&&&))
 
 import FRP.Yampa
 import qualified SDL 
-import SDL (Renderer, Point(..), V4(..), V2(..), WindowConfig(..), ($=))
+import SDL (Window, Renderer, Point(..), V4(..), V2(..), WindowConfig(..), ($=))
 
 import Foreign.C.Types
 
@@ -32,7 +32,6 @@ import Debug.Trace
 --- TODO ---
 ------------
 
--- Add a quit button
 -- Add a timer in the corner
 -- Pipe gap vary within a range
 -- Pipe speed increase and pipe gap narrow over time
@@ -73,9 +72,18 @@ instance ToObject Pipe where
   type FunctorType Pipe = []
   toObject :: Pipe -> [] (Object 'Center Double)
   toObject (Pipe x h) =
-    [ Object (Rectangle pipeWidth h) (x, 100 + half h) Green
-    , Object (Rectangle pipeWidth (windowH - groundHeight - h - pipeGap)) (x, groundHeight + (windowH - groundHeight - h - pipeGap) + pipeGap) Green
-    ]
+    let
+      bottomWidth = pipeWidth
+      bottomHeight = h
+      bottomX = x
+      bottomY = half groundHeight + half h
+      topWidth = pipeWidth
+      topHeight = windowH - (groundHeight + h + pipeGap)
+      topX = x
+      topY = groundHeight + h + pipeGap + half topHeight
+    in [ Object (Rectangle bottomWidth bottomHeight) (bottomX, bottomY) Green
+       , Object (Rectangle topWidth topHeight) (topX, topY) Green
+       ]
 
 instance ToObject Game where
   type FunctorType Game = []
@@ -107,6 +115,7 @@ detectCollision obj1 obj2 =
 
 detectCollision' :: Object 'Center Double -> Object 'Center Double -> Bool
 detectCollision' = detectCollision `on` shiftAnchor 
+
 
 ---------------------
 --- SDL RENDERING ---
@@ -167,11 +176,12 @@ draw renderer (Scene bg fg) = do
   traverse_ (drawObject renderer) (bg ++ fg)
   SDL.present renderer
 
-initSDL :: IO Renderer
+initSDL :: IO (Renderer, Window)
 initSDL = do
   SDL.initializeAll
   window <- SDL.createWindow "Yampy Cube Clone" window
-  SDL.createRenderer window 0 SDL.defaultRenderer
+  renderer <- SDL.createRenderer window 0 SDL.defaultRenderer
+  return (renderer, window)
 
 
 ----------------
@@ -255,24 +265,6 @@ initPipe = Pipe 200 100
 half :: Fractional a => a -> a
 half n = n / 2
 
--- c1 left side to the left of c2's right side AND
--- c1 right side to the right of c2's left side AND
--- C1 bottom side beneath c2's top side AND
--- c1 top side above c2's top side
---checkCollision :: Game -> Bool
---checkCollision (Game cube pipe) = 
---  let cLeft    = cubeX - half cubeSize
---      cRight   = cubeX + half cubeSize
---      cTop     = _y cube + half cubeSize
---      cBottom  = _y cube - half cubeSize
---      p1Left   = _x pipe - half pipeWidth
---      p1Right  = _x pipe + half pipeWidth
---      p1Top    = groundHeight + _h pipe
---      p1Bottom = groundHeight
---      collision = (cLeft < p1Right) && (cRight > p1Left) && (cBottom < p1Top) && (cTop > p1Bottom)
---      groundIntersect = _y cube <= groundHeight + half cubeSize
---  in groundIntersect || collision -- (xIntersects && yIntersects)
-
 checkCollision :: Game -> Bool
 checkCollision (Game cube pipe) = or $ detectCollision' (runIdentity . toObject $ cube) <$> toObject pipe
   
@@ -335,6 +327,14 @@ flapTrigger = proc input -> do
   spaceBarTap <- keyPressed SDL.ScancodeSpace -< input
   returnA -< spaceBarTap
 
+shouldExit :: SF AppInput Bool
+shouldExit = quitTrigger >>^ isEvent
+
+quitTrigger :: SF AppInput (Event ())
+quitTrigger = proc input -> do
+  qButtonTap <- keyPressed SDL.ScancodeQ -< input
+  returnA -< qButtonTap
+
 pollKeyboard :: IO (Maybe AppInput)
 pollKeyboard = do
   event <- (fmap . fmap) SDL.eventPayload SDL.pollEvent
@@ -351,8 +351,11 @@ constructAppInput _ = Nothing
 
 mainLoop :: IO ()
 mainLoop = do
-  renderer <- initSDL
+  (renderer, window) <- initSDL
   reactimate (return NoEvent) produceInput (handleOutput renderer) pipeline
+  SDL.destroyRenderer renderer
+  SDL.destroyWindow window
+  SDL.quit
     where
       produceInput :: Bool -> IO (DTime, Maybe (Event SDL.EventPayload))
       produceInput _ = do
@@ -361,11 +364,11 @@ mainLoop = do
         case mevent of
           Just event -> return (0.1, Just . Event $ SDL.eventPayload event)
           Nothing -> return (0.1, Nothing)
-      handleOutput :: Renderer -> p -> Game -> IO Bool
-      handleOutput r _ g@(Game c@(Cube y v) p) = do
-        --putStrLn ("pos: " ++ show v ++ " vel: " ++ show v)
-        --print $ toObject p
-        liftIO $ draw r (toScene $ toObject g)
-        return False
-      pipeline :: SF (Event SDL.EventPayload) Game
-      pipeline = parseSDLInput >>> game
+      handleOutput :: Renderer -> Bool -> (Game, Bool) -> IO Bool
+      handleOutput r _ (game, shouldExit) = do
+        liftIO $ draw r (toScene $ toObject game)
+        return shouldExit
+      pipeline :: SF (Event SDL.EventPayload) (Game, Bool)
+      pipeline = parseSDLInput >>> (game &&& shouldExit)
+
+  
