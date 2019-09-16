@@ -1,3 +1,4 @@
+{-# OPTIONS_GHC -fno-warn-type-defaults #-}
 {-# LANGUAGE DeriveFunctor #-}
 {-# LANGUAGE DataKinds #-}
 {-# LANGUAGE OverloadedStrings #-}
@@ -7,16 +8,11 @@
 module Lib where
 
 import Control.Concurrent
-import Control.Monad
 import Control.Monad.IO.Class
 
-import Data.IORef
-import Data.Bifunctor
 import Data.Foldable
 import Data.Functor.Identity
 import Data.Function
-import Data.Proxy
-import Data.Tuple.Extra hiding ((&&&))
 
 import FRP.Yampa
 import qualified SDL 
@@ -25,13 +21,12 @@ import SDL (Window, Renderer, Point(..), V4(..), V2(..), WindowConfig(..), ($=))
 import Foreign.C.Types
 
 import System.Random
-import Debug.Trace
 
 
 ------------
 --- TODO ---
 ------------
-
+-- Implement Surface/Texture rendering for SDL
 -- Add a timer in the corner
 -- Pipe gap vary within a range
 -- Pipe speed increase and pipe gap narrow over time
@@ -45,7 +40,6 @@ import Debug.Trace
 data Anchor = Center | UpperLeft
 data Color = Red | Yellow | Green | Blue | BabyBlue | White | Brown deriving Show
 data Shape a = Rectangle { _rectW :: a, _rectH :: a}
-           --  | Circle    { _rad :: a }
              deriving (Show, Functor)
 
 data Object (anchor :: Anchor) a = Object
@@ -76,7 +70,7 @@ instance ToObject Pipe where
       bottomWidth = pipeWidth
       bottomHeight = h
       bottomX = x
-      bottomY = half groundHeight + half h
+      bottomY = groundHeight + half h
       topWidth = pipeWidth
       topHeight = windowH - (groundHeight + h + pipeGap)
       topX = x
@@ -88,7 +82,7 @@ instance ToObject Pipe where
 instance ToObject Game where
   type FunctorType Game = []
   toObject :: Game -> [Object 'Center Double]
-  toObject (Game cube pipe) = toObject pipe ++ (pure . runIdentity) (toObject cube) 
+  toObject (Game cube pipe _) = toObject pipe ++ (pure . runIdentity) (toObject cube) 
 
 class Functor f => ToScene f where
   toScene :: f (Object 'Center Double) -> Scene
@@ -102,20 +96,77 @@ instance ToScene Identity where
   toScene (Identity obj) = initScene (pure obj)
 
 initScene :: [Object 'Center Double] -> Scene
-initScene = Scene [Object (Rectangle 200 500) (100, 350) BabyBlue, Object (Rectangle 200 100) (100, 50) Brown]
+initScene fg = Scene [Object (Rectangle 200 500) (100, 350) BabyBlue] (Object (Rectangle 200 100) (100, 50) Brown:fg)
 
--- Axis Aligned Rectangle Collision
+
+---------------------------
+--- COLLISION DETECTION ---
+---------------------------
+
 detectCollision :: Object 'UpperLeft Double -> Object 'UpperLeft Double -> Bool
-detectCollision obj1 obj2 =
+detectCollision obj1@(Object (Rectangle _ _ ) _ _) obj2@(Object (Rectangle _ _ ) _ _) =
   let (x1, y1) = _pos obj1
       (x2, y2) = _pos obj2
       (w1, h1) = (_rectW &&& _rectH) (_shape obj1)
       (w2, h2) = (_rectW &&& _rectH) (_shape obj2)
   in x1 < x2 + w2 && x1 + w1 > x2 && y1 > y2 - h2 && y1 - h1 < y2
 
+type X = Double
+type Y = Double
+type W = Double
+type H = Double
+type R = Double
+type Magnitude = Double
+type DotProduct = Double
+
+-- 'UpperLeft
+-- Axis Aligned Rectangle Collision
+rectRectCollision ::  (W, H, X, Y) -> (W, H, X, Y) -> Bool
+rectRectCollision (w1, h1, x1, y1) (w2, h2, x2, y2) =
+  x1 < x2 + w2 && x1 + w1 > x2 && y1 > y2 - h2 && y1 - h1 < y2
+
 detectCollision' :: Object 'Center Double -> Object 'Center Double -> Bool
 detectCollision' = detectCollision `on` shiftAnchor 
 
+
+{-
+circleCircleCollision :: (R, X, Y) -> (R, X, Y) -> Bool
+circleCircleCollision (r1, x1, y1) (r2, x2, y2) =
+  let
+    dx = x1 - x2
+    dy = y1 - y2
+    distance = sqrt (dx * dx + dy * dy)
+  in distance < r1 + r2
+
+circleRectCollision :: (R, X, Y) -> (W, H, X, Y) -> Bool
+circleRectCollision circ rect = 
+  let
+    f (r, x1, y1) (w, h, x2, y2) = x1 >= x2 && x1 <= x2 + w && y1 <= y2 && y1 >= y2 - h
+    --g (r, x1, y1) 
+  in f circ rect
+
+lineCircleCollision :: (X, Y) -> (X, Y) -> (R, X, Y) -> Bool
+lineCircleCollision (x1, y1) (x2, y2) (r, xC, yC) =
+  let
+    segV = (x1 - x2, y1 - y2)
+    ptV = (xC - x1, yC - y1)
+    segVunit = Lib.normalize segV
+    projV = dotProduct ptV segVunit
+    closest = undefined
+  in undefined
+
+magnitude :: (X, Y) -> Magnitude 
+magnitude (x, y) = sqrt $ x^2 + y^2
+
+dotProduct :: (X, Y) -> (X, Y) -> DotProduct
+dotProduct (x1, y1) (x2, y2) = (x1 * x2) + (y1 * y2)
+
+normalize :: (X, Y) -> (X, Y)
+normalize xy@(x, y) =
+  let
+    m = magnitude xy
+  in (x / m, y / m)
+-}
 
 ---------------------
 --- SDL RENDERING ---
@@ -179,9 +230,9 @@ draw renderer (Scene bg fg) = do
 initSDL :: IO (Renderer, Window)
 initSDL = do
   SDL.initializeAll
-  window <- SDL.createWindow "Yampy Cube Clone" window
-  renderer <- SDL.createRenderer window 0 SDL.defaultRenderer
-  return (renderer, window)
+  window' <- SDL.createWindow "Yampy Cube Clone" window
+  renderer <- SDL.createRenderer window' 0 SDL.defaultRenderer
+  return (renderer, window')
 
 
 ----------------
@@ -206,9 +257,9 @@ parseSDLInput :: SF (Event SDL.EventPayload) AppInput
 parseSDLInput = accumHoldBy nextAppInput initAppInput
 
 nextAppInput :: AppInput -> SDL.EventPayload -> AppInput
-nextAppInput inp (SDL.KeyboardEvent event) =
-  case SDL.keyboardEventKeyMotion event of
-    SDL.Pressed  -> inp { inpKeyPressed = Just $ SDL.keysymScancode $ SDL.keyboardEventKeysym event }
+nextAppInput inp (SDL.KeyboardEvent e) =
+  case SDL.keyboardEventKeyMotion e of
+    SDL.Pressed  -> inp { inpKeyPressed = Just $ SDL.keysymScancode $ SDL.keyboardEventKeysym e }
     SDL.Released -> inp { inpKeyPressed = Nothing}
 nextAppInput inp _ = inp
 
@@ -219,7 +270,7 @@ nextAppInput inp _ = inp
 
 data Pipe = Pipe { _x :: Double, _h :: Double } deriving Show
 data Cube = Cube { _y :: Double, _v :: Double } deriving Show
-data Game = Game { gameCube :: Cube, gamePipe :: Pipe }
+data Game = Game { gameCube :: Cube, gamePipe :: Pipe, gameTime :: Time }
 
 windowW :: Num a => a
 windowW = 200
@@ -249,13 +300,19 @@ pipeGap :: Double
 pipeGap = 200
 
 initGame :: Game
-initGame = Game initCube initPipe
+initGame = Game initCube initPipe 0
 
 initCube :: Cube
 initCube = Cube 350 (-10)
 
 initPipe :: Pipe
 initPipe = Pipe 200 100
+
+pipeSpeed :: Time -> Double
+pipeSpeed t
+  | t < 20 = negate 20
+  | t < 40 = negate 30
+  | otherwise = negate 40
 
 
 -----------------
@@ -266,7 +323,7 @@ half :: Fractional a => a -> a
 half n = n / 2
 
 checkCollision :: Game -> Bool
-checkCollision (Game cube pipe) = or $ detectCollision' (runIdentity . toObject $ cube) <$> toObject pipe
+checkCollision (Game cube pipe _) = or $ detectCollision' (runIdentity . toObject $ cube) <$> toObject pipe
   
 game :: SF AppInput Game
 game = switch sf (const game)
@@ -278,18 +335,21 @@ game = switch sf (const game)
 
 gameSession :: SF AppInput Game
 gameSession = proc input -> do
+  currentTime <- time -< ()
   cube <- flappingCube initCube -< input
-  pipe <- pipeHeightGen >>> movingPipe initPipe -< ()
-  returnA -< Game cube pipe
+  pipe <- pipeHeightGen >>> movingPipe initPipe -< currentTime
+  returnA -< Game cube pipe currentTime
 
-pipeHeightGen :: SF a Double
-pipeHeightGen = noiseR (20, skyHeight - pipeGap - 20) (mkStdGen 3)
+pipeHeightGen :: SF Time (Double, Time)
+pipeHeightGen = proc input -> do
+  h <- noiseR (20, skyHeight - pipeGap - 20) (mkStdGen 3) -< ()
+  returnA -< (h, input)
 
-movingPipe :: Pipe -> SF Double Pipe
+movingPipe :: Pipe -> SF (Double, Time) Pipe
 movingPipe (Pipe x0 h0) = switch sf cont
   where
-    sf = proc h -> do
-      x <- imIntegral x0 -< - 20
+    sf = proc (h, t) -> do
+      x <- imIntegral x0 -< pipeSpeed t
       respawn <- edge -< x <= negate cubeSize
       returnA -< (Pipe (x + half pipeWidth) h0, respawn `tag` h)
     cont h = movingPipe $ Pipe x0 h
@@ -305,11 +365,11 @@ flappingCube cube = switch sf cont
   where
     sf :: SF AppInput (Cube, Event Cube)
     sf = proc input -> do
-      cube <- fallingCube cube -< ()
+      cube' <- fallingCube cube -< ()
       flap <- flapTrigger -< input
-      returnA -< (cube, flap `tag` cube)
+      returnA -< (cube', flap `tag` cube')
     cont :: Cube -> SF AppInput Cube
-    cont (Cube y v) = flappingCube (Cube y 50)
+    cont (Cube y _) = flappingCube (Cube y 50)
 
 bouncingCube :: Cube -> SF a Cube
 bouncingCube cube = switch (sf cube) cont
@@ -317,8 +377,8 @@ bouncingCube cube = switch (sf cube) cont
     sf :: Cube -> SF a (Cube, Event Cube)
     sf cube' = proc input -> do
       Cube y v <- fallingCube cube' -< input
-      event <- edge -< y <= -475
-      returnA -< (Cube y v, event `tag` Cube y v) 
+      e <- edge -< y <= -475
+      returnA -< (Cube y v, e `tag` Cube y v) 
     cont :: Cube -> SF a Cube
     cont (Cube y v) = bouncingCube (Cube y (-v * 0.7))
 
@@ -337,8 +397,8 @@ quitTrigger = proc input -> do
 
 pollKeyboard :: IO (Maybe AppInput)
 pollKeyboard = do
-  event <- (fmap . fmap) SDL.eventPayload SDL.pollEvent
-  case event of
+  e <- (fmap . fmap) SDL.eventPayload SDL.pollEvent
+  case e of
     Just (SDL.KeyboardEvent keyevent) -> do
       let scancode = SDL.keysymScancode . SDL.keyboardEventKeysym $ keyevent
       return $ constructAppInput scancode
@@ -351,10 +411,10 @@ constructAppInput _ = Nothing
 
 mainLoop :: IO ()
 mainLoop = do
-  (renderer, window) <- initSDL
+  (renderer, window') <- initSDL
   reactimate (return NoEvent) produceInput (handleOutput renderer) pipeline
   SDL.destroyRenderer renderer
-  SDL.destroyWindow window
+  SDL.destroyWindow window'
   SDL.quit
     where
       produceInput :: Bool -> IO (DTime, Maybe (Event SDL.EventPayload))
@@ -362,13 +422,12 @@ mainLoop = do
         threadDelay 30000
         mevent <- SDL.pollEvent
         case mevent of
-          Just event -> return (0.1, Just . Event $ SDL.eventPayload event)
+          Just e -> return (0.1, Just . Event $ SDL.eventPayload e)
           Nothing -> return (0.1, Nothing)
       handleOutput :: Renderer -> Bool -> (Game, Bool) -> IO Bool
-      handleOutput r _ (game, shouldExit) = do
-        liftIO $ draw r (toScene $ toObject game)
-        return shouldExit
+      handleOutput r _ (gameState, exitBool) = do
+        print $ gameTime gameState
+        liftIO $ draw r (toScene $ toObject gameState)
+        return exitBool
       pipeline :: SF (Event SDL.EventPayload) (Game, Bool)
       pipeline = parseSDLInput >>> (game &&& shouldExit)
-
-  
