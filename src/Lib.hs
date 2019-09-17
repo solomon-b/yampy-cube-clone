@@ -29,7 +29,7 @@ import System.Random
 -- Implement Surface/Texture rendering for SDL
 -- Add a timer in the corner
 -- Pipe gap vary within a range
--- Pipe speed increase and pipe gap narrow over time
+-- Pipe gap narrow over time
 
   
 ----------------
