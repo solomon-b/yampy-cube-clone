@@ -15,7 +15,7 @@ import Data.Functor.Identity
 import Data.Function
 
 import FRP.Yampa
-import qualified SDL 
+import qualified SDL
 import SDL (Window, Renderer, Point(..), V4(..), V2(..), WindowConfig(..), ($=))
 
 import Foreign.C.Types
@@ -31,7 +31,7 @@ import System.Random
 -- Pipe gap vary within a range
 -- Pipe gap narrow over time
 
-  
+
 ----------------
 --- GRAPHICS ---
 ----------------
@@ -82,7 +82,7 @@ instance ToObject Pipe where
 instance ToObject Game where
   type FunctorType Game = []
   toObject :: Game -> [Object 'Center Double]
-  toObject (Game cube pipe _) = toObject pipe ++ (pure . runIdentity) (toObject cube) 
+  toObject (Game cube pipe _) = toObject pipe ++ (pure . runIdentity) (toObject cube)
 
 class Functor f => ToScene f where
   toScene :: f (Object 'Center Double) -> Scene
@@ -126,7 +126,7 @@ rectRectCollision (w1, h1, x1, y1) (w2, h2, x2, y2) =
   x1 < x2 + w2 && x1 + w1 > x2 && y1 > y2 - h2 && y1 - h1 < y2
 
 detectCollision' :: Object 'Center Double -> Object 'Center Double -> Bool
-detectCollision' = detectCollision `on` shiftAnchor 
+detectCollision' = detectCollision `on` shiftAnchor
 
 
 {-
@@ -139,10 +139,10 @@ circleCircleCollision (r1, x1, y1) (r2, x2, y2) =
   in distance < r1 + r2
 
 circleRectCollision :: (R, X, Y) -> (W, H, X, Y) -> Bool
-circleRectCollision circ rect = 
+circleRectCollision circ rect =
   let
     f (r, x1, y1) (w, h, x2, y2) = x1 >= x2 && x1 <= x2 + w && y1 <= y2 && y1 >= y2 - h
-    --g (r, x1, y1) 
+    --g (r, x1, y1)
   in f circ rect
 
 lineCircleCollision :: (X, Y) -> (X, Y) -> (R, X, Y) -> Bool
@@ -155,7 +155,7 @@ lineCircleCollision (x1, y1) (x2, y2) (r, xC, yC) =
     closest = undefined
   in undefined
 
-magnitude :: (X, Y) -> Magnitude 
+magnitude :: (X, Y) -> Magnitude
 magnitude (x, y) = sqrt $ x^2 + y^2
 
 dotProduct :: (X, Y) -> (X, Y) -> DotProduct
@@ -177,7 +177,7 @@ normalize xy@(x, y) =
 window :: WindowConfig
 window = SDL.defaultWindow { windowInitialSize = V2 windowW windowH }
 
-shiftAnchor :: Object 'Center Double -> Object 'UpperLeft Double 
+shiftAnchor :: Object 'Center Double -> Object 'UpperLeft Double
 shiftAnchor obj =
   let (xC, yC) = _pos obj
       (w, h) = (_rectW &&& _rectH) . _shape $ obj
@@ -188,7 +188,7 @@ mkObjNum :: (RealFrac a, Num b) => Object anchor a -> Object anchor b
 mkObjNum = fmap (fromIntegral . floor)
 
 mkSdlRect :: Num a => Object 'UpperLeft a -> (SDL.Rectangle a, Color)
-mkSdlRect obj = 
+mkSdlRect obj =
   let (w, h) = (_rectW &&& _rectH) . _shape $ obj
       (x, y) = (-) windowH <$> _pos obj
       color  = _color obj
@@ -217,7 +217,7 @@ setDrawColor renderer color =
     White    -> SDL.rendererDrawColor renderer $= V4 255 255 255 255
     Brown    -> SDL.rendererDrawColor renderer $= V4 150 90 25 0
     Yellow   -> SDL.rendererDrawColor renderer $= V4 255 200 50 0
-    
+
 drawBackground :: Renderer -> Color -> IO ()
 drawBackground renderer color = setDrawColor renderer color >> SDL.clear renderer
 
@@ -265,7 +265,7 @@ nextAppInput inp _ = inp
 
 
 -------------------------
--- TYPES AND CONSTANTS --  
+-- TYPES AND CONSTANTS --
 -------------------------
 
 data Pipe = Pipe { _x :: Double, _h :: Double } deriving Show
@@ -324,7 +324,7 @@ half n = n / 2
 
 checkCollision :: Game -> Bool
 checkCollision (Game cube pipe _) = or $ detectCollision' (runIdentity . toObject $ cube) <$> toObject pipe
-  
+
 game :: SF AppInput Game
 game = switch sf (const game)
   where
@@ -378,7 +378,7 @@ bouncingCube cube = switch (sf cube) cont
     sf cube' = proc input -> do
       Cube y v <- fallingCube cube' -< input
       e <- edge -< y <= -475
-      returnA -< (Cube y v, e `tag` Cube y v) 
+      returnA -< (Cube y v, e `tag` Cube y v)
     cont :: Cube -> SF a Cube
     cont (Cube y v) = bouncingCube (Cube y (-v * 0.7))
 
@@ -395,14 +395,14 @@ quitTrigger = proc input -> do
   qButtonTap <- keyPressed SDL.ScancodeQ -< input
   returnA -< qButtonTap
 
-pollKeyboard :: IO (Maybe AppInput)
-pollKeyboard = do
-  e <- (fmap . fmap) SDL.eventPayload SDL.pollEvent
-  case e of
-    Just (SDL.KeyboardEvent keyevent) -> do
-      let scancode = SDL.keysymScancode . SDL.keyboardEventKeysym $ keyevent
-      return $ constructAppInput scancode
-    _ -> return Nothing
+--pollKeyboard :: IO (Maybe AppInput)
+--pollKeyboard = do
+--  e <- (fmap . fmap) SDL.eventPayload SDL.pollEvent
+--  case e of
+--    Just (SDL.KeyboardEvent keyevent) -> do
+--      let scancode = SDL.keysymScancode . SDL.keyboardEventKeysym $ keyevent
+--      return $ constructAppInput scancode
+--    _ -> return Nothing
 
 constructAppInput :: SDL.Scancode -> Maybe AppInput
 constructAppInput SDL.ScancodeQ = Just $ initAppInput { inpQuit = True }
